@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# Generated data is large and fully reproducible via generate_data.py (seeded RNG),
+# so we don't commit it -- but we keep the final metrics report.
+data/*.csv
+!reports/metrics.csv
