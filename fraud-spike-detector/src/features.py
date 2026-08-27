@@ -1,26 +1,23 @@
 """
-Feature engineering for fraud-spike detection.
+Feature engineering for fraud-spike detection (v2 — enhanced & vectorized).
 
 We bucket transactions into fixed time windows (default: 1 minute) and compute,
-for EACH window, features that should separate normal traffic from the 3 spike
-types we injected:
+for EACH window, features that separate normal traffic from fraud spikes:
 
-  - txn_count            -> catches VELOCITY_BURST (raw volume spike)
-  - unique_devices        -> low unique-device count despite high volume is
-                              suspicious (one bot device firing repeatedly)
-  - amount_mean / amount_zscore
-                          -> catches AMOUNT_ANOMALY (unusually large amounts
-                             vs the merchant's historical distribution)
-  - new_device_ratio      -> catches GEO_DEVICE_CLUSTER (devices never seen
-                             before, concentrated in a short burst)
-  - new_geo_ratio         -> catches GEO_DEVICE_CLUSTER (unfamiliar geos)
-  - device_reuse_rate     -> catches VELOCITY_BURST (same device used
-                             repeatedly = txn_count / unique_devices)
-
-The label for a window is 1 if ANY transaction in it is a fraud-spike txn
-(this makes it a window-level detection problem, which is closer to how a
-real-time monitoring system would operate: it doesn't need to catch every
-single fraudulent transaction, it needs to catch the WINDOW/EVENT).
+  - txn_count            -> VELOCITY_BURST signal
+  - unique_devices       -> Low unique-device count despite high volume
+  - amount_mean/max      -> AMOUNT_ANOMALY signal
+  - amount_z_mean/max    -> Amount z-scores relative to merchant baseline
+  - new_device_ratio     -> GEO_DEVICE_CLUSTER signal
+  - new_geo_ratio        -> Unfamiliar geos
+  - device_reuse_rate    -> Same device used repeatedly
+  - amount_std           -> Amount dispersion
+  - amount_cv            -> Coefficient of variation
+  - hour_of_day          -> Temporal signal
+  - is_weekend           -> Day-of-week signal
+  - geo_entropy          -> Unique geo count per window
+  - device_entropy       -> Unique device count per window
+  - amount_skewness      -> Amount distribution shape
 """
 
 import numpy as np
@@ -30,9 +27,7 @@ WINDOW = "1min"
 
 
 def _historical_stats(train_df: pd.DataFrame):
-    """Compute the merchant's baseline amount distribution and known
-    devices/geos from the TRAIN set only. Using train-only stats to build
-    features on the test set avoids leaking future information."""
+    """Compute baseline statistics from TRAIN set only."""
     normal_train = train_df[train_df.is_fraud_spike == 0]
     return {
         "amount_mean": normal_train.amount.mean(),
@@ -47,8 +42,8 @@ def build_window_features(df: pd.DataFrame, hist_stats: dict) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.set_index("timestamp").sort_index()
 
-    df["is_known_device"] = df["device_id"].isin(hist_stats["known_devices"])
-    df["is_known_geo"] = df["geo"].isin(hist_stats["known_geos"])
+    df["is_known_device"] = df["device_id"].isin(hist_stats["known_devices"]).astype(float)
+    df["is_known_geo"] = df["geo"].isin(hist_stats["known_geos"]).astype(float)
     df["amount_z"] = (df["amount"] - hist_stats["amount_mean"]) / hist_stats["amount_std"]
 
     grouped = df.resample(WINDOW)
@@ -60,22 +55,34 @@ def build_window_features(df: pd.DataFrame, hist_stats: dict) -> pd.DataFrame:
         "amount_max": grouped["amount"].max(),
         "amount_z_mean": grouped["amount_z"].mean(),
         "amount_z_max": grouped["amount_z"].max(),
-        "new_device_ratio": grouped["is_known_device"].apply(
-            lambda s: 1 - s.mean() if len(s) > 0 else 0
-        ),
-        "new_geo_ratio": grouped["is_known_geo"].apply(
-            lambda s: 1 - s.mean() if len(s) > 0 else 0
-        ),
+        "new_device_ratio": 1.0 - grouped["is_known_device"].mean(),
+        "new_geo_ratio": 1.0 - grouped["is_known_geo"].mean(),
         "window_label": grouped["is_fraud_spike"].max(),
+        "amount_std": grouped["amount"].std(),
+        "geo_entropy": grouped["geo"].nunique(),
+        "device_entropy": grouped["device_id"].nunique(),
+        "amount_skewness": grouped["amount"].skew(),
     })
 
-    # drop empty windows (no transactions at all -> not meaningful)
+    # Drop empty windows
     feats = feats[feats["txn_count"] > 0].copy()
+
+    # Derived features
     feats["device_reuse_rate"] = feats["txn_count"] / feats["unique_devices"]
+    feats["amount_cv"] = feats["amount_std"] / (feats["amount_mean"].abs() + 1e-10)
+
+    # Temporal features
+    feats = feats.reset_index().rename(columns={"timestamp": "window_start"})
+    feats["hour_of_day"] = feats["window_start"].dt.hour
+    feats["is_weekend"] = feats["window_start"].dt.dayofweek.isin([5, 6]).astype(int)
+
+    # Clean missing values
     feats["window_label"] = feats["window_label"].fillna(0).astype(int)
+    feats["amount_std"] = feats["amount_std"].fillna(0)
+    feats["amount_skewness"] = feats["amount_skewness"].fillna(0)
     feats = feats.fillna(0)
 
-    return feats.reset_index().rename(columns={"timestamp": "window_start"})
+    return feats
 
 
 def main():
@@ -94,6 +101,9 @@ def main():
     print(f"Test windows:  {len(test_feats)}  (positive: {test_feats.window_label.sum()})")
     print(f"\nTrain positive rate: {train_feats.window_label.mean():.4f}")
     print(f"Test positive rate:  {test_feats.window_label.mean():.4f}")
+    print(f"\nFeature columns ({len(train_feats.columns)}):")
+    for col in train_feats.columns:
+        print(f"  {col}")
     print("\nSample feature rows (positive windows):")
     print(train_feats[train_feats.window_label == 1].head(3).to_string())
 

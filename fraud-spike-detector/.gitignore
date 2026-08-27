@@ -5,6 +5,12 @@ __pycache__/
 venv/
 
 # Generated data is large and fully reproducible via generate_data.py (seeded RNG),
-# so we don't commit it -- but we keep the final metrics report.
+# so we don't commit it -- but we keep the final metrics and report images.
 data/*.csv
+
+# Trained models (reproducible via detect.py)
+models/*.joblib
+
+# Keep reports (metrics + visualizations)
 !reports/metrics.csv
+!reports/*.png
