@@ -29,7 +29,7 @@ from sklearn.metrics import (
 
 # --- Page config ---
 st.set_page_config(
-    page_title="Fraud-Spike Detector — Dashboard",
+    page_title="SentinelRisk-AI — Transaction Risk Dashboard",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -78,8 +78,8 @@ def load_data():
 
 
 def main():
-    st.title("🛡️ Fraud-Spike Detector")
-    st.caption("Built for Razorpay AI Buildathon — Track 02: AI Risk Manager")
+    st.title("🛡️ SentinelRisk-AI Engine")
+    st.caption("Enterprise AI Risk Manager — Multi-Model Transaction Spike & Fraud Detection Platform")
 
     data = load_data()
 

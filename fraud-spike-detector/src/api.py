@@ -27,9 +27,9 @@ from models import FEATURE_COLS
 from features import build_window_features, _historical_stats
 
 app = FastAPI(
-    title="Fraud-Spike Detector API",
-    description="Real-time fraud-spike detection for merchant transaction streams. "
-                "Built for Razorpay AI Buildathon — Track 02: AI Risk Manager.",
+    title="SentinelRisk-AI REST Engine",
+    description="Production-grade real-time fraud-spike detection API for digital payment streams. "
+                "Leverages multi-model ensembles, vectorized feature engineering, and explainable AI reason codes.",
     version="2.0.0",
 )
 

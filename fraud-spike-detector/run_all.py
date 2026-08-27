@@ -33,8 +33,8 @@ def main():
     os.makedirs("reports", exist_ok=True)
 
     print("=" * 70)
-    print("FRAUD-SPIKE DETECTOR -- Full Pipeline")
-    print("Built for Razorpay AI Buildathon -- Track 02: AI Risk Manager")
+    print("SENTINELRISK-AI -- Enterprise Transaction Risk & Fraud Engine")
+    print("Multi-Model Detection, Explainable AI & Financial Cost Optimization")
     print("=" * 70)
 
     total_start = time.time()
