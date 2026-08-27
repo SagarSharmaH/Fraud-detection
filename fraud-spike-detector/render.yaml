@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: sentinelrisk-ai-dashboard
+    env: docker
+    dockerfilePath: Dockerfile
+    region: oregon
+    plan: free
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8501
