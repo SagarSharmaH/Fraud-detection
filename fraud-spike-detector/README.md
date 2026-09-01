@@ -1,8 +1,8 @@
 # 🛡️ SentinelRisk-AI
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688.svg)](https://fastapi.tiangolo.com/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.25%2B-FF4B4B.svg)](https://streamlit.io/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104%2B-009688.svg)](https://fastapi.tiangolo.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.28%2B-FF4B4B.svg)](https://streamlit.io/)
 [![Docker Containerized](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![CI Build](https://img.shields.io/badge/CI%2FCD-GitHub_Actions-green.svg)](.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -20,50 +20,30 @@ Modern payment processing networks require real-time risk engines that identify 
 1. **Multi-Paradigm Detection Arsenal**: Combines heuristic baseline rules, supervised tree ensembles (**Random Forest**, **XGBoost**), unsupervised anomaly detectors (**Isolation Forest**, **PCA Autoencoder**), and an **F1-Weighted Ensemble**.
 2. **Vectorized Feature Engine**: Computes 16 rolling-window spatial, temporal, amount distribution, and entropy metrics in native vectorized NumPy/Pandas operations ($100\times$ speedup).
 3. **Explainable AI (XAI)**: Every flagged anomaly returns actionable human-readable explanations (z-score deviations, feature importance weights, reconstruction error drivers).
-4. **Financial Cost-Aware Optimization**: Evaluates detectors not just on ML accuracy ($F1$, ROC-AUC), but on **actual business financial impact** by balancing False Positive friction cost ($\text{Cost}_{\text{FP}}$) vs False Negative chargeback loss ($\text{Cost}_{\text{FN}}$).
+4. **Financial Cost-Aware Optimization**: Evaluates detectors not just on ML accuracy ($F1$, ROC-AUC, MCC), but on **actual business financial impact** by balancing False Positive friction cost ($\text{Cost}_{\text{FP}}$) vs False Negative chargeback loss ($\text{Cost}_{\text{FN}}$).
 
 ---
 
 ## 🏗️ Architecture & Data Pipeline
 
-```
-Raw Transaction Stream (Timestamp, Amount, Device ID, Geography)
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. Synthetic Data Stream Engine (src/generate_data.py)          │
-│ 60-Day Merchant Stream (15,086 txns) + 3 Fraud Burst Types      │
-│ Split strictly by TIME: Train (45 Days) ──► Held-Out Test (15D) │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. Vectorized Feature Engine (src/features.py)                  │
-│ 1-Minute Resampled Windows ──► 16 Engineered Features:          │
-│ Volume, Z-Scores, Geo/Device Entropy, Skewness, CV, Temporal   │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 3. Multi-Model Detection Arsenal (src/models.py)                │
-│ ├─ Rule-Based Threshold Baseline  ├─ Isolation Forest Anomaly  │
-│ ├─ Supervised Random Forest       ├─ Linear PCA Autoencoder     │
-│ ├─ Supervised XGBoost             └─ F1-Weighted Ensemble       │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 4. Evaluation & Financial Cost Engine (src/evaluate.py)         │
-│ Precision, Recall, F1, ROC-AUC, PR-AUC, Confusion Matrix,       │
-│ Business Financial Cost Breakdown & Failure Case Inspector      │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌──────────────────────────────────┬──────────────────────────────┐
-│ 5. Interactive Streamlit App     │ 6. FastAPI REST Engine       │
-│    (src/dashboard.py)            │    (src/api.py)              │
-│    Live UI on http://localhost:8501 │    Endpoint on port 8000     │
-└──────────────────────────────────┴──────────────────────────────┘
+```mermaid
+flowchart TD
+    A["🔄 Raw Transaction Stream<br/>Timestamp, Amount, Device ID, Geo"] --> B["📊 Synthetic Data Engine<br/><code>src/generate_data.py</code><br/>60-Day Stream + 3 Fraud Types"]
+    B --> C["⚙️ Vectorized Feature Engine<br/><code>src/features.py</code><br/>16 Engineered Features"]
+    C --> D["🧠 Multi-Model Detection<br/><code>src/models.py</code><br/>6 Detectors + Ensemble"]
+    D --> E["📈 Evaluation & Cost Engine<br/><code>src/evaluate.py</code><br/>F1, MCC, ROC-AUC, Cost Model"]
+    E --> F["📊 Visualizations<br/><code>src/visualize.py</code><br/>8 Publication Charts"]
+    E --> G["🌐 FastAPI REST API<br/><code>src/api.py</code><br/>Port 8000"]
+    E --> H["📱 Streamlit Dashboard<br/><code>src/dashboard.py</code><br/>Port 8501"]
+
+    style A fill:#1a1a2e,stroke:#4fc3f7,color:#fafafa
+    style B fill:#1a1a2e,stroke:#81c784,color:#fafafa
+    style C fill:#1a1a2e,stroke:#ffb74d,color:#fafafa
+    style D fill:#1a1a2e,stroke:#e57373,color:#fafafa
+    style E fill:#1a1a2e,stroke:#ba68c8,color:#fafafa
+    style F fill:#1a1a2e,stroke:#4dd0e1,color:#fafafa
+    style G fill:#1a1a2e,stroke:#4fc3f7,color:#fafafa
+    style H fill:#1a1a2e,stroke:#81c784,color:#fafafa
 ```
 
 ---
@@ -77,10 +57,17 @@ Raw Transaction Stream (Timestamp, Amount, Device ID, Geography)
 git clone https://github.com/SagarSharmaH/Fraud-detection.git
 cd Fraud-detection
 
+# Create virtual environment (recommended)
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Run full pipeline end-to-end (24s execution)
+# Run full pipeline end-to-end
 python run_all.py
 
 # Run test suite
@@ -104,20 +91,30 @@ python src/api.py
 docker compose up --build
 ```
 
+### 4. Pipeline CLI Options
+
+```bash
+# Skip data generation (reuse existing CSVs)
+python run_all.py --skip-data
+
+# Skip visualization generation (faster iteration)
+python run_all.py --skip-viz
+```
+
 ---
 
 ## 📊 Held-Out Test Set Performance Benchmark
 
 Evaluated on 15 days of never-before-seen held-out transaction data ($3,158$ 1-minute windows, $122$ true positive fraud spikes):
 
-| Detector | Paradigm | TP | FP | FN | Precision | Recall | F1 Score | ROC-AUC | Total Estimated Cost (INR)* |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🌲 **Random Forest** | Supervised | 115 | 0 | 7 | **1.0000** | **0.9426** | **0.9705** | **1.0000** | **₹105,000** |
-| 🚀 **XGBoost** | Supervised | 115 | 2 | 7 | **0.9829** | **0.9426** | **0.9623** | **0.9999** | **₹105,300** |
-| ⚖️ **Weighted Ensemble** | Meta-Voter | 115 | 13 | 7 | **0.8984** | **0.9426** | **0.9200** | **0.9997** | **₹106,950** |
-| 🌲 **Isolation Forest** | Unsupervised | 113 | 22 | 9 | **0.8370** | **0.9262** | **0.8794** | **0.9926** | **₹138,300** |
-| 📏 **Rule Baseline** | Heuristic | 112 | 27 | 10 | **0.8058** | **0.9180** | **0.8582** | **0.9573** | **₹154,050** |
-| 🧠 **Autoencoder** | Neural Linear | 118 | 92 | 4 | **0.5619** | **0.9672** | **0.7108** | **0.9936** | **₹73,800** |
+| Detector | Paradigm | TP | FP | FN | Precision | Recall | F1 Score | MCC | ROC-AUC | Total Estimated Cost (INR)* |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 🌲 **Random Forest** | Supervised | 115 | 0 | 7 | **1.0000** | **0.9426** | **0.9705** | **0.9700** | **1.0000** | **₹105,000** |
+| 🚀 **XGBoost** | Supervised | 115 | 2 | 7 | **0.9829** | **0.9426** | **0.9623** | **0.9598** | **0.9999** | **₹105,300** |
+| ⚖️ **Weighted Ensemble** | Meta-Voter | 115 | 13 | 7 | **0.8984** | **0.9426** | **0.9200** | **0.9133** | **0.9997** | **₹106,950** |
+| 🌲 **Isolation Forest** | Unsupervised | 113 | 22 | 9 | **0.8370** | **0.9262** | **0.8794** | **0.8692** | **0.9926** | **₹138,300** |
+| 📏 **Rule Baseline** | Heuristic | 112 | 27 | 10 | **0.8058** | **0.9180** | **0.8582** | **0.8453** | **0.9573** | **₹154,050** |
+| 🧠 **Autoencoder** | Neural Linear | 118 | 92 | 4 | **0.5619** | **0.9672** | **0.7108** | **0.7052** | **0.9936** | **₹73,800** |
 
 *\*Cost Model Assumptions: $\text{Cost}_{\text{FP}} = ₹150$ (manual review friction cost per false alarm); $\text{Cost}_{\text{FN}} = ₹15,000$ (average chargeback financial loss per uncaptured fraud spike).*
 
@@ -139,6 +136,16 @@ Evaluated on 15 days of never-before-seen held-out transaction data ($3,158$ 1-m
 ---
 
 ## 📡 REST API Documentation
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/score` | Score a batch of transactions |
+| `GET` | `/health` | Health check with uptime and detector count |
+| `GET` | `/models` | Model metadata (features, training time, versions) |
+| `GET` | `/detectors` | List available detectors with safe names |
+| `GET` | `/features` | List all 16 features with descriptions |
 
 ### POST `/score` — Batch Transaction Scoring
 
@@ -192,32 +199,54 @@ curl -X POST http://localhost:8000/score \
 
 ## 🧪 Testing & Verification
 
-The test suite covers feature calculation sanity, statistical boundaries, model interfaces, threshold behavior, and FastAPI endpoint contracts:
+The test suite covers feature calculation sanity, statistical boundaries, model interfaces, threshold behavior, edge cases, and FastAPI endpoint contracts:
 
 ```bash
+# Run all tests
 python -m pytest tests/ -v
+
+# Run with coverage
+python -m pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-```
-tests/test_api.py::test_health_endpoint PASSED                           [  6%]
-tests/test_api.py::test_models_endpoint PASSED                           [ 12%]
-tests/test_api.py::test_score_endpoint PASSED                            [ 18%]
-tests/test_detectors.py::TestFeatures::test_historical_stats_keys PASSED [ 25%]
-tests/test_detectors.py::TestFeatures::test_feature_columns_present PASSED [ 31%]
-tests/test_detectors.py::TestFeatures::test_no_nans PASSED               [ 37%]
-tests/test_detectors.py::TestFeatures::test_txn_count_positive PASSED    [ 43%]
-tests/test_detectors.py::TestFeatures::test_window_label_binary PASSED   [ 50%]
-tests/test_detectors.py::TestFeatures::test_device_reuse_rate PASSED     [ 56%]
-tests/test_detectors.py::TestDetectors::test_build_all_detectors PASSED  [ 62%]
-tests/test_detectors.py::TestDetectors::test_detector_interface PASSED   [ 68%]
-tests/test_detectors.py::TestDetectors::test_rule_based_thresholds PASSED [ 75%]
-tests/test_detectors.py::TestDetectors::test_random_forest_importances PASSED [ 81%]
-tests/test_detectors.py::TestDetectors::test_reasons_only_for_flagged PASSED [ 87%]
-tests/test_detectors.py::TestDetectors::test_ensemble_weights_sum_to_one PASSED [ 93%]
-tests/test_detectors.py::TestDetectors::test_autoencoder_threshold PASSED [100%]
+### Test Coverage
 
-====================== 16 passed in 7.66s ======================
-```
+| Area | Tests | Description |
+|------|-------|-------------|
+| Feature Engineering | 12 | Column presence, NaN-free, edge cases (empty, single-row, all-normal) |
+| Detector Interface | 10 | fit/predict contract, repr, importances, thresholds, ensemble weights |
+| Edge Cases | 6 | Empty predictions, missing columns, all-normal training data |
+| API Endpoints | 8 | Health, models, detectors, features, score, error paths (400, 422) |
+
+---
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| `ModuleNotFoundError: xgboost` | Run `pip install xgboost`. The pipeline gracefully falls back to 5 detectors without it. |
+| `FileNotFoundError: data/*.csv` | Run `python run_all.py` to generate synthetic data first. |
+| Pipeline slow on first run | ~60-120s is normal. Use `--skip-data` on subsequent runs to reuse existing data. |
+| Docker build fails | Ensure Docker Desktop is running. Try `docker compose build --no-cache`. |
+| Streamlit port conflict | Change port: `streamlit run src/dashboard.py --server.port=8502` |
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes and run the test suite: `python -m pytest tests/ -v`
+4. Run the full pipeline to verify: `python run_all.py`
+5. Submit a pull request
+
+### Code Standards
+- All functions have type hints and docstrings
+- New detectors must implement `BaseDetector` interface (`.fit()`, `.predict()`, `.name`)
+- Tests must cover both happy paths and error cases
+- Use `logging` module instead of `print()` in library code
 
 ---
 
@@ -252,4 +281,4 @@ I built SentinelRisk-AI to solve this with an end-to-end Machine Learning & Risk
 
 ## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See [`LICENSE`](LICENSE) for more information.

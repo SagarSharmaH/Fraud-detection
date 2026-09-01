@@ -2,7 +2,7 @@
 Evaluation harness for ALL fraud-spike detectors.
 
 Reports, for EACH detector on the held-out test set:
-  - precision, recall, F1
+  - precision, recall, F1, specificity, balanced accuracy, MCC
   - a confusion matrix
   - an estimated business cost, combining:
       * cost of a false positive: a legitimate customer/transaction window
@@ -20,12 +20,20 @@ COST ASSUMPTIONS (documented, not hidden):
   These are illustrative, not calibrated to any real merchant.
 """
 
+from __future__ import annotations
+
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
     precision_score, recall_score, f1_score, confusion_matrix,
-    roc_auc_score, average_precision_score,
+    roc_auc_score, average_precision_score, matthews_corrcoef,
+    balanced_accuracy_score,
 )
+
+log = logging.getLogger(__name__)
 
 COST_PER_FALSE_NEGATIVE = 15000  # INR, avg loss per missed fraud-spike window
 COST_PER_FALSE_POSITIVE = 150    # INR, avg cost per wrongly-flagged normal window
@@ -39,19 +47,36 @@ def _get_detector_columns(df: pd.DataFrame) -> list[str]:
 
 
 def evaluate_detector(name: str, y_true: np.ndarray, y_pred: np.ndarray,
-                      y_score: np.ndarray = None) -> dict:
+                      y_score: np.ndarray | None = None) -> dict[str, Any]:
+    """Compute all evaluation metrics for a single detector.
+
+    Args:
+        name: Detector name.
+        y_true: Ground truth binary labels.
+        y_pred: Predicted binary labels.
+        y_score: Optional continuous prediction scores for ROC/PR curves.
+
+    Returns:
+        Dict of metric name -> value.
+    """
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     precision = precision_score(y_true, y_pred, zero_division=0)
     recall = recall_score(y_true, y_pred, zero_division=0)
     f1 = f1_score(y_true, y_pred, zero_division=0)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    balanced_acc = balanced_accuracy_score(y_true, y_pred)
+    mcc = matthews_corrcoef(y_true, y_pred)
     total_cost = fp * COST_PER_FALSE_POSITIVE + fn * COST_PER_FALSE_NEGATIVE
 
-    result = {
+    result: dict[str, Any] = {
         "detector": name,
         "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
+        "specificity": round(specificity, 4),
+        "balanced_accuracy": round(balanced_acc, 4),
+        "mcc": round(mcc, 4),
         "false_positive_cost": int(fp * COST_PER_FALSE_POSITIVE),
         "false_negative_cost": int(fn * COST_PER_FALSE_NEGATIVE),
         "total_estimated_cost_inr": int(total_cost),
@@ -72,7 +97,8 @@ def evaluate_detector(name: str, y_true: np.ndarray, y_pred: np.ndarray,
 
 
 def print_failure_cases(df: pd.DataFrame, pred_col: str, reasons_col: str,
-                        name: str, n: int = 2):
+                        name: str, n: int = 2) -> None:
+    """Print documented failure cases for a detector — honest exception reporting."""
     print(f"\n--- {name}: documented failure cases (not cherry-picked wins) ---")
 
     fps = df[(df.window_label == 0) & (df[pred_col] == 1)]
@@ -103,13 +129,23 @@ def print_failure_cases(df: pd.DataFrame, pred_col: str, reasons_col: str,
         print("\nNo false negatives in test set for this detector.")
 
 
-def main():
-    df = pd.read_csv("data/predictions_test.csv")
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    try:
+        df = pd.read_csv("data/predictions_test.csv")
+    except FileNotFoundError:
+        log.error("Predictions file not found. Run detect.py first.")
+        return
+
     y_true = df["window_label"].values
 
     det_names = _get_detector_columns(df)
+    if not det_names:
+        log.error("No detector columns found in predictions file.")
+        return
 
-    results = []
+    results: list[dict[str, Any]] = []
     for name in det_names:
         pred_col = f"{name}_pred"
         score_col = f"{name}_score"
@@ -148,7 +184,7 @@ def main():
     best = results_df.iloc[0]
     print(f"\n{'='*80}")
     print(f"BEST DETECTOR: {best['detector']} (F1={best['f1']:.4f}, "
-          f"Cost=INR {best['total_estimated_cost_inr']:,})")
+          f"MCC={best['mcc']:.4f}, Cost=INR {best['total_estimated_cost_inr']:,})")
     print(f"{'='*80}")
 
 

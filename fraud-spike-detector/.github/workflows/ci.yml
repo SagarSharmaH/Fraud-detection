@@ -7,29 +7,96 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
+  lint:
+    name: Lint & Style Check
     runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install linter
+      run: pip install ruff
+
+    - name: Run Ruff Linter
+      run: ruff check src/ tests/ --select E,F,W --ignore E501
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: lint
     strategy:
       matrix:
-        python-version: ["3.10", "3.11"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-cov
+
+    - name: Run Unit Tests with Coverage
+      run: |
+        python -m pytest tests/test_detectors.py -v --tb=short --cov=src --cov-report=term-missing
+
+    - name: Run API Integration Tests
+      run: |
+        python run_all.py --skip-viz
+        python -m pytest tests/test_api.py -v --tb=short
+
+  pipeline:
+    name: Full Pipeline Execution
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run Pytest Test Suite
-      run: |
-        python -m pytest tests/ -v
+    - name: Run Full Pipeline
+      run: python run_all.py
 
-    - name: Run Full Pipeline Execution Test
+    - name: Verify Outputs Exist
       run: |
-        python run_all.py
+        test -f data/transactions_full.csv
+        test -f data/features_train.csv
+        test -f data/predictions_test.csv
+        test -f models/metadata.json
+        test -f reports/metrics.csv
+        echo "All expected output files verified."

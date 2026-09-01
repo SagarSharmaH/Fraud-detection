@@ -15,8 +15,13 @@ Detectors:
 All trained models are serialized to models/ for API serving.
 """
 
+from __future__ import annotations
+
 import os
+import sys
 import time
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -27,13 +32,22 @@ from models import (
 )
 from model_store import save_model, save_metadata
 
+log = logging.getLogger(__name__)
 
-def main():
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
     os.makedirs("data", exist_ok=True)
     os.makedirs("models", exist_ok=True)
 
-    train_feats = pd.read_csv("data/features_train.csv")
-    test_feats = pd.read_csv("data/features_test.csv")
+    # --- Load features ---
+    try:
+        train_feats = pd.read_csv("data/features_train.csv")
+        test_feats = pd.read_csv("data/features_test.csv")
+    except FileNotFoundError as e:
+        log.error("Feature files not found. Run features.py first: %s", e)
+        sys.exit(1)
 
     print(f"Training set: {len(train_feats)} windows ({train_feats.window_label.sum()} positive)")
     print(f"Test set:     {len(test_feats)} windows ({test_feats.window_label.sum()} positive)")
@@ -43,14 +57,26 @@ def main():
     # ---- Build and train individual detectors ----
     detectors = build_all_detectors()
 
-    timing = {}
+    timing: dict[str, float] = {}
     for det in detectors:
         print(f"Training {det.name}...", end=" ", flush=True)
         t0 = time.time()
-        det.fit(train_feats)
-        elapsed = time.time() - t0
-        timing[det.name] = elapsed
-        print(f"done ({elapsed:.2f}s)")
+        try:
+            det.fit(train_feats)
+            elapsed = time.time() - t0
+            timing[det.name] = elapsed
+            print(f"done ({elapsed:.2f}s)")
+        except Exception as e:
+            elapsed = time.time() - t0
+            timing[det.name] = elapsed
+            log.error("Failed to train %s after %.2fs: %s", det.name, elapsed, e)
+            print(f"FAILED ({elapsed:.2f}s) — {e}")
+            # Remove failed detector from list
+            detectors.remove(det)
+
+    if not detectors:
+        log.error("All detectors failed to train. Aborting.")
+        sys.exit(1)
 
     # ---- Build ensemble (requires fitted sub-detectors) ----
     ensemble = EnsembleDetector(detectors=list(detectors))
@@ -78,20 +104,25 @@ def main():
 
     for det in detectors:
         safe_name = det.name.lower().replace(" ", "_").replace("(", "").replace(")", "")
-        preds, scores, reasons = det.predict(test_feats)
-
-        out[f"{safe_name}_pred"] = preds
-        out[f"{safe_name}_score"] = scores
-        out[f"{safe_name}_reasons"] = [", ".join(r) if r else "" for r in reasons]
-
-        print(f"  {det.name}: flagged {preds.sum()} / {len(test_feats)} windows")
+        try:
+            preds, scores, reasons = det.predict(test_feats)
+            out[f"{safe_name}_pred"] = preds
+            out[f"{safe_name}_score"] = scores
+            out[f"{safe_name}_reasons"] = [", ".join(r) if r else "" for r in reasons]
+            print(f"  {det.name}: flagged {preds.sum()} / {len(test_feats)} windows")
+        except Exception as e:
+            log.error("Prediction failed for %s: %s", det.name, e)
+            print(f"  {det.name}: PREDICTION FAILED — {e}")
 
     out.to_csv("data/predictions_test.csv", index=False)
     print("\nSaved predictions to data/predictions_test.csv")
 
     # ---- Save trained models ----
     for det in detectors:
-        save_model(det, "models")
+        try:
+            save_model(det, "models")
+        except Exception as e:
+            log.error("Failed to save model %s: %s", det.name, e)
     save_metadata(detectors, timing, "models")
     print("Saved trained models to models/")
 

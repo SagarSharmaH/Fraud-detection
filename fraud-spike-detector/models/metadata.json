@@ -1,5 +1,6 @@
 {
-  "created_at": "2026-08-27T18:39:51.042436",
+  "version": "2.0.0",
+  "created_at": "2026-09-01T21:54:00.311436",
   "n_features": 16,
   "feature_columns": [
     "txn_count",
@@ -23,7 +24,7 @@
     {
       "name": "Rule-Based Baseline",
       "class": "RuleBasedDetector",
-      "training_time_seconds": 0.006,
+      "training_time_seconds": 0.007,
       "thresholds": {
         "txn_count": 2.0,
         "amount_z_max": 5.1443,
@@ -34,7 +35,7 @@
     {
       "name": "Random Forest",
       "class": "RandomForestDetector",
-      "training_time_seconds": 0.775,
+      "training_time_seconds": 0.499,
       "top_features": {
         "amount_std": 0.1809,
         "amount_z_max": 0.1205,
@@ -46,7 +47,7 @@
     {
       "name": "XGBoost",
       "class": "XGBoostDetector",
-      "training_time_seconds": 0.912,
+      "training_time_seconds": 2.033,
       "top_features": {
         "new_device_ratio": 0.31929999589920044,
         "txn_count": 0.28700000047683716,
@@ -58,12 +59,12 @@
     {
       "name": "Isolation Forest",
       "class": "IsolationForestDetector",
-      "training_time_seconds": 0.621
+      "training_time_seconds": 0.41
     },
     {
       "name": "Autoencoder",
       "class": "AutoencoderDetector",
-      "training_time_seconds": 0.015
+      "training_time_seconds": 0.01
     },
     {
       "name": "Ensemble (Weighted Vote)",

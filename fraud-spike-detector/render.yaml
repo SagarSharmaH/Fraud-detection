@@ -7,6 +7,9 @@ services:
     plan: free
     branch: main
     autoDeploy: true
+    healthCheckPath: /_stcore/health
     envVars:
       - key: PORT
         value: 8501
+      - key: PYTHONUNBUFFERED
+        value: 1

@@ -19,6 +19,11 @@ Explainability: every flagged window comes with a `reasons` list explaining
 WHY it was flagged.
 """
 
+from __future__ import annotations
+
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
@@ -26,21 +31,37 @@ from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+log = logging.getLogger(__name__)
+
 try:
     from xgboost import XGBClassifier
     HAS_XGBOOST = True
 except ImportError:
     HAS_XGBOOST = False
+    log.info("xgboost not installed — XGBoostDetector will be unavailable")
 
 
-FEATURE_COLS = [
+# Frozen tuple prevents accidental mutation of the feature list
+FEATURE_COLS: tuple[str, ...] = (
     "txn_count", "unique_devices", "amount_mean", "amount_max",
     "amount_z_mean", "amount_z_max", "new_device_ratio", "new_geo_ratio",
     "device_reuse_rate",
     # --- new features (v2) ---
     "amount_std", "amount_cv", "hour_of_day", "is_weekend",
     "geo_entropy", "device_entropy", "amount_skewness",
-]
+)
+
+
+def _validate_features(df: pd.DataFrame, context: str = "") -> None:
+    """Validate that a DataFrame contains all required feature columns."""
+    missing = [c for c in FEATURE_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing required feature columns{' in ' + context if context else ''}: {missing}. "
+            f"Available columns: {list(df.columns)}"
+        )
+    if len(df) == 0:
+        log.warning("Empty DataFrame passed to %s — predictions will be empty", context)
 
 
 class BaseDetector(ABC):
@@ -53,7 +74,7 @@ class BaseDetector(ABC):
         ...
 
     @abstractmethod
-    def predict(self, feats: pd.DataFrame):
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
         """
         Returns:
             preds: np.ndarray of 0/1 labels
@@ -61,6 +82,9 @@ class BaseDetector(ABC):
             reasons_list: list[list[str]] of human-readable flag explanations
         """
         ...
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__}(name='{self.name}')>"
 
 
 # ---------------------------------------------------------------------------
@@ -71,18 +95,29 @@ class RuleBasedDetector(BaseDetector):
 
     name = "Rule-Based Baseline"
 
-    def __init__(self):
-        self.thresholds = {}
+    def __init__(self) -> None:
+        self.thresholds: dict[str, float] = {}
 
-    def fit(self, train_feats: pd.DataFrame):
+    def fit(self, train_feats: pd.DataFrame) -> "RuleBasedDetector":
+        _validate_features(train_feats, context="RuleBasedDetector.fit")
         normal = train_feats[train_feats.window_label == 0]
+        if len(normal) == 0:
+            log.warning("No normal windows in training data — using default thresholds")
+            self.thresholds = {"txn_count": 10, "amount_z_max": 5.0,
+                               "new_device_ratio": 0.9, "device_reuse_rate": 5.0}
+            return self
         self.thresholds["txn_count"] = normal["txn_count"].quantile(0.995)
         self.thresholds["amount_z_max"] = normal["amount_z_max"].quantile(0.995)
         self.thresholds["new_device_ratio"] = 0.9
         self.thresholds["device_reuse_rate"] = normal["device_reuse_rate"].quantile(0.995)
+        log.info("RuleBasedDetector fitted — thresholds: %s", self.thresholds)
         return self
 
-    def predict(self, feats: pd.DataFrame):
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        _validate_features(feats, context="RuleBasedDetector.predict")
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
         t_txn = self.thresholds["txn_count"]
         t_zmax = self.thresholds["amount_z_max"]
         t_devratio = self.thresholds["new_device_ratio"]
@@ -102,11 +137,11 @@ class RuleBasedDetector(BaseDetector):
         scores = (cond1.astype(float) + cond2.astype(float) + cond3.astype(float) + cond4.astype(float)) / 4.0
 
         n = len(feats)
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         flagged_indices = np.where(preds == 1)[0]
 
         for i in flagged_indices:
-            reasons = []
+            reasons: list[str] = []
             if cond1[i]:
                 reasons.append(f"txn_count={txn_counts[i]:.0f} > threshold {t_txn:.1f}")
             if cond2[i]:
@@ -128,30 +163,44 @@ class RandomForestDetector(BaseDetector):
 
     name = "Random Forest"
 
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5) -> None:
         self.model = RandomForestClassifier(
             n_estimators=200, max_depth=6, min_samples_leaf=5,
             class_weight="balanced", random_state=42, n_jobs=-1
         )
         self.threshold = threshold
-        self.feature_importances_ = {}
+        self.feature_importances_: dict[str, float] = {}
+        self._train_means: pd.Series | None = None
+        self._train_stds: pd.Series | None = None
 
-    def fit(self, train_feats: pd.DataFrame):
-        X = train_feats[FEATURE_COLS]
+    def fit(self, train_feats: pd.DataFrame) -> "RandomForestDetector":
+        _validate_features(train_feats, context="RandomForestDetector.fit")
+        X = train_feats[list(FEATURE_COLS)]
         y = train_feats["window_label"]
         self.model.fit(X, y)
         self.feature_importances_ = dict(zip(FEATURE_COLS, self.model.feature_importances_))
         self._train_means = X.mean()
         self._train_stds = X.std().replace(0, 1)
+        log.info("RandomForest fitted — top feature: %s",
+                 max(self.feature_importances_, key=self.feature_importances_.get))
         return self
 
-    def predict(self, feats: pd.DataFrame):
-        X = feats[FEATURE_COLS]
-        probs = self.model.predict_proba(X)[:, 1]
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        _validate_features(feats, context="RandomForestDetector.predict")
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
+        X = feats[list(FEATURE_COLS)]
+        probs_matrix = self.model.predict_proba(X)
+        if probs_matrix.shape[1] == 1:
+            classes = getattr(self.model, "classes_", [0])
+            probs = np.zeros(len(feats)) if classes[0] == 0 else np.ones(len(feats))
+        else:
+            probs = probs_matrix[:, 1]
         preds = (probs >= self.threshold).astype(int)
 
         n = len(feats)
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         flagged_indices = np.where(preds == 1)[0]
 
         if len(flagged_indices) > 0:
@@ -181,7 +230,7 @@ class XGBoostDetector(BaseDetector):
 
     name = "XGBoost"
 
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5) -> None:
         if not HAS_XGBOOST:
             raise ImportError("xgboost is required for XGBoostDetector")
         self.model = XGBClassifier(
@@ -189,24 +238,38 @@ class XGBoostDetector(BaseDetector):
             scale_pos_weight=10, eval_metric="logloss", random_state=42, n_jobs=-1
         )
         self.threshold = threshold
-        self.feature_importances_ = {}
+        self.feature_importances_: dict[str, float] = {}
+        self._train_means: pd.Series | None = None
+        self._train_stds: pd.Series | None = None
 
-    def fit(self, train_feats: pd.DataFrame):
-        X = train_feats[FEATURE_COLS]
+    def fit(self, train_feats: pd.DataFrame) -> "XGBoostDetector":
+        _validate_features(train_feats, context="XGBoostDetector.fit")
+        X = train_feats[list(FEATURE_COLS)]
         y = train_feats["window_label"]
         self.model.fit(X, y)
         self.feature_importances_ = dict(zip(FEATURE_COLS, self.model.feature_importances_))
         self._train_means = X.mean()
         self._train_stds = X.std().replace(0, 1)
+        log.info("XGBoost fitted — top feature: %s",
+                 max(self.feature_importances_, key=self.feature_importances_.get))
         return self
 
-    def predict(self, feats: pd.DataFrame):
-        X = feats[FEATURE_COLS]
-        probs = self.model.predict_proba(X)[:, 1]
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        _validate_features(feats, context="XGBoostDetector.predict")
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
+        X = feats[list(FEATURE_COLS)]
+        probs_matrix = self.model.predict_proba(X)
+        if probs_matrix.shape[1] == 1:
+            classes = getattr(self.model, "classes_", [0])
+            probs = np.zeros(len(feats)) if classes[0] == 0 else np.ones(len(feats))
+        else:
+            probs = probs_matrix[:, 1]
         preds = (probs >= self.threshold).astype(int)
 
         n = len(feats)
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         flagged_indices = np.where(preds == 1)[0]
 
         if len(flagged_indices) > 0:
@@ -236,32 +299,41 @@ class IsolationForestDetector(BaseDetector):
 
     name = "Isolation Forest"
 
-    def __init__(self, contamination: float = 0.02):
+    def __init__(self, contamination: float = 0.02) -> None:
         self.model = IsolationForest(
             n_estimators=200, contamination=contamination,
             random_state=42, n_jobs=-1,
         )
         self.scaler = StandardScaler()
+        self._train_means: pd.Series | None = None
+        self._train_stds: pd.Series | None = None
 
-    def fit(self, train_feats: pd.DataFrame):
-        X = train_feats[FEATURE_COLS]
+    def fit(self, train_feats: pd.DataFrame) -> "IsolationForestDetector":
+        _validate_features(train_feats, context="IsolationForestDetector.fit")
+        X = train_feats[list(FEATURE_COLS)]
         X_scaled = self.scaler.fit_transform(X)
         self.model.fit(X_scaled)
         self._train_means = X.mean()
         self._train_stds = X.std().replace(0, 1)
+        log.info("IsolationForest fitted on %d windows", len(train_feats))
         return self
 
-    def predict(self, feats: pd.DataFrame):
-        X = feats[FEATURE_COLS]
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        _validate_features(feats, context="IsolationForestDetector.predict")
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
+        X = feats[list(FEATURE_COLS)]
         X_scaled = self.scaler.transform(X)
 
         raw_scores = self.model.decision_function(X_scaled)
         iso_preds = self.model.predict(X_scaled)
         preds = (iso_preds == -1).astype(int)
-        scores = 1 - (raw_scores - raw_scores.min()) / (raw_scores.max() - raw_scores.min() + 1e-10)
+        score_range = raw_scores.max() - raw_scores.min() + 1e-10
+        scores = 1 - (raw_scores - raw_scores.min()) / score_range
 
         n = len(feats)
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         flagged_indices = np.where(preds == 1)[0]
 
         if len(flagged_indices) > 0:
@@ -290,29 +362,40 @@ class AutoencoderDetector(BaseDetector):
 
     name = "Autoencoder"
 
-    def __init__(self, n_components: int = 6, threshold_percentile: float = 97.0):
+    def __init__(self, n_components: int = 6, threshold_percentile: float = 97.0) -> None:
         self.pca = PCA(n_components=n_components, random_state=42)
         self.scaler = StandardScaler()
         self.threshold_percentile = threshold_percentile
-        self.threshold = None
+        self.threshold: float | None = None
 
-    def fit(self, train_feats: pd.DataFrame):
-        X = train_feats[FEATURE_COLS].values
+    def fit(self, train_feats: pd.DataFrame) -> "AutoencoderDetector":
+        _validate_features(train_feats, context="AutoencoderDetector.fit")
+        X = train_feats[list(FEATURE_COLS)].values
         X_scaled = self.scaler.fit_transform(X)
 
         self.pca.fit(X_scaled)
 
         normal_mask = train_feats["window_label"].values == 0
         X_normal = X_scaled[normal_mask]
+        if len(X_normal) == 0:
+            log.warning("No normal windows — setting threshold to 1.0")
+            self.threshold = 1.0
+            return self
+
         X_proj = self.pca.transform(X_normal)
         X_rec = self.pca.inverse_transform(X_proj)
         normal_errors = np.mean((X_normal - X_rec) ** 2, axis=1)
 
-        self.threshold = np.percentile(normal_errors, self.threshold_percentile)
+        self.threshold = float(np.percentile(normal_errors, self.threshold_percentile))
+        log.info("Autoencoder fitted — reconstruction error threshold: %.4f", self.threshold)
         return self
 
-    def predict(self, feats: pd.DataFrame):
-        X = feats[FEATURE_COLS].values
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        _validate_features(feats, context="AutoencoderDetector.predict")
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
+        X = feats[list(FEATURE_COLS)].values
         X_scaled = self.scaler.transform(X)
         X_proj = self.pca.transform(X_scaled)
         X_rec = self.pca.inverse_transform(X_proj)
@@ -322,7 +405,7 @@ class AutoencoderDetector(BaseDetector):
         scores = errors / (self.threshold + 1e-10)
 
         n = len(feats)
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         per_feature_errors = (X_scaled - X_rec) ** 2
         flagged_indices = np.where(preds == 1)[0]
 
@@ -344,12 +427,12 @@ class EnsembleDetector(BaseDetector):
 
     name = "Ensemble (Weighted Vote)"
 
-    def __init__(self, detectors: list[BaseDetector], vote_threshold: float = 0.4):
+    def __init__(self, detectors: list[BaseDetector], vote_threshold: float = 0.4) -> None:
         self.detectors = detectors
         self.vote_threshold = vote_threshold
-        self.weights = {}
+        self.weights: dict[str, float] = {}
 
-    def fit(self, train_feats: pd.DataFrame):
+    def fit(self, train_feats: pd.DataFrame) -> "EnsembleDetector":
         from sklearn.metrics import f1_score
 
         y_true = train_feats["window_label"].values
@@ -360,14 +443,18 @@ class EnsembleDetector(BaseDetector):
 
         total = sum(self.weights.values())
         self.weights = {k: v / total for k, v in self.weights.items()}
+        log.info("Ensemble weights: %s", {k: f"{v:.3f}" for k, v in self.weights.items()})
         return self
 
-    def predict(self, feats: pd.DataFrame):
+    def predict(self, feats: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, list[list[str]]]:
+        if len(feats) == 0:
+            return np.array([], dtype=int), np.array([], dtype=float), []
+
         n = len(feats)
         weighted_votes = np.zeros(n)
-        all_reasons = [[] for _ in range(n)]
+        all_reasons: list[list[str]] = [[] for _ in range(n)]
 
-        sub_preds_reasons = []
+        sub_preds_reasons: list[tuple[str, np.ndarray, list[list[str]]]] = []
         for det in self.detectors:
             preds, scores, sub_reasons = det.predict(feats)
             w = self.weights.get(det.name, 1.0 / len(self.detectors))
@@ -377,7 +464,7 @@ class EnsembleDetector(BaseDetector):
         preds = (weighted_votes >= self.vote_threshold).astype(int)
         scores = weighted_votes
 
-        reasons_list = [[] for _ in range(n)]
+        reasons_list: list[list[str]] = [[] for _ in range(n)]
         ens_flagged = np.where(preds == 1)[0]
         if len(ens_flagged) > 0:
             for det_name, sub_preds, sub_reasons in sub_preds_reasons:
@@ -390,12 +477,12 @@ class EnsembleDetector(BaseDetector):
 
         return preds, scores, reasons_list
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state["detectors"] = []
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self.detectors = []
 
@@ -405,7 +492,7 @@ class EnsembleDetector(BaseDetector):
 # ---------------------------------------------------------------------------
 def build_all_detectors() -> list[BaseDetector]:
     """Return a list of all available detector instances (unfitted)."""
-    detectors = [
+    detectors: list[BaseDetector] = [
         RuleBasedDetector(),
         RandomForestDetector(),
         IsolationForestDetector(),

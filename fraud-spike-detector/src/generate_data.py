@@ -21,10 +21,16 @@ We split by TIME (not random shuffle) into train/test so the test set is a
 genuinely held-out future period, which is the honest way to evaluate this.
 """
 
-import numpy as np
-import pandas as pd
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+
+log = logging.getLogger(__name__)
 
 RNG_SEED = 42
 rng = np.random.default_rng(RNG_SEED)
@@ -32,12 +38,13 @@ rng = np.random.default_rng(RNG_SEED)
 N_DAYS = 60
 START = datetime(2026, 6, 1)
 
-NORMAL_GEOS = ["Mumbai", "Bangalore", "Delhi", "Pune", "Chennai", "Hyderabad"]
+NORMAL_GEOS: list[str] = ["Mumbai", "Bangalore", "Delhi", "Pune", "Chennai", "Hyderabad"]
 NORMAL_DEVICES_POOL_SIZE = 400  # pool of "known" recurring devices
 
 
 @dataclass
 class SpikeEvent:
+    """Record of a single injected fraud spike event."""
     kind: str
     start: datetime
     end: datetime
@@ -48,11 +55,22 @@ def _daily_intensity(ts: pd.Timestamp) -> float:
     """Relative transaction intensity by hour-of-day and day-of-week."""
     hour_factor = 0.3 + 0.7 * np.sin((ts.hour - 6) / 24 * 2 * np.pi) ** 2
     weekend_factor = 1.3 if ts.dayofweek >= 5 else 1.0
-    return hour_factor * weekend_factor
+    return float(hour_factor * weekend_factor)
 
 
-def generate_normal_transactions(n_days: int = N_DAYS) -> pd.DataFrame:
-    rows = []
+def generate_normal_transactions(n_days: int = N_DAYS) -> tuple[pd.DataFrame, int]:
+    """Generate normal (non-fraudulent) merchant transactions.
+
+    Args:
+        n_days: Number of days to simulate.
+
+    Returns:
+        Tuple of (DataFrame of transactions, next available txn_id counter).
+    """
+    if n_days <= 0:
+        raise ValueError(f"n_days must be positive, got {n_days}")
+
+    rows: list[dict] = []
     txn_id = 0
     device_pool = [f"dev_{i:04d}" for i in range(NORMAL_DEVICES_POOL_SIZE)]
 
@@ -80,27 +98,43 @@ def generate_normal_transactions(n_days: int = N_DAYS) -> pd.DataFrame:
                 "spike_type": "none",
             })
             txn_id += 1
+
     df = pd.DataFrame(rows)
+    log.info("Generated %d normal transactions over %d days", len(df), n_days)
     return df, txn_id
 
 
-def _spike_days(n_per_period: int, n_days: int, split_day: int):
+def _spike_days(n_per_period: int, n_days: int, split_day: int) -> list[int]:
     """
     Return a list of days to place spikes on, guaranteeing coverage of BOTH the
     train period (before split_day) and the test period (from split_day on).
     Without this, random placement can (and did, on first run) put zero spikes
     in the held-out test set, which would make evaluation meaningless.
     """
+    if split_day <= 2 or split_day >= n_days - 2:
+        raise ValueError(f"split_day must be between 3 and {n_days - 3}, got {split_day}")
+
     train_days = rng.choice(np.arange(2, split_day - 1), size=n_per_period, replace=False)
     test_days = rng.choice(np.arange(split_day + 1, n_days - 2), size=n_per_period, replace=False)
     return list(train_days) + list(test_days)
 
 
-def inject_spikes(df: pd.DataFrame, start_txn_id: int, n_days: int = N_DAYS, split_day: int = 45):
-    """Inject 3 kinds of labeled fraud spikes at random points in time."""
-    rows = []
+def inject_spikes(df: pd.DataFrame, start_txn_id: int,
+                  n_days: int = N_DAYS, split_day: int = 45) -> tuple[pd.DataFrame, list[SpikeEvent]]:
+    """Inject 3 kinds of labeled fraud spikes at random points in time.
+
+    Args:
+        df: Normal transaction DataFrame (used for context, not mutated).
+        start_txn_id: Next available txn_id counter.
+        n_days: Total number of simulation days.
+        split_day: Day index for train/test split.
+
+    Returns:
+        Tuple of (DataFrame of spike transactions, list of SpikeEvent records).
+    """
+    rows: list[dict] = []
     txn_id = start_txn_id
-    events = []
+    events: list[SpikeEvent] = []
 
     n_spikes_per_type_per_period = 4  # -> 4 in train + 4 in test, per spike type
 
@@ -169,10 +203,14 @@ def inject_spikes(df: pd.DataFrame, start_txn_id: int, n_days: int = N_DAYS, spl
         events.append(SpikeEvent("GEO_DEVICE_CLUSTER", start, start + timedelta(seconds=window_secs), n_injected))
 
     spike_df = pd.DataFrame(rows)
+    log.info("Injected %d spike events (%d total spike transactions)",
+             len(events), len(spike_df))
     return spike_df, events
 
 
-def main():
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
     split_day = 45
     normal_df, next_id = generate_normal_transactions()
     spike_df, events = inject_spikes(normal_df, next_id, split_day=split_day)

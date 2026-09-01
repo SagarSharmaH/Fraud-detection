@@ -20,26 +20,61 @@ for EACH window, features that separate normal traffic from fraud spikes:
   - amount_skewness      -> Amount distribution shape
 """
 
+from __future__ import annotations
+
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 WINDOW = "1min"
 
 
-def _historical_stats(train_df: pd.DataFrame):
-    """Compute baseline statistics from TRAIN set only."""
+def _historical_stats(train_df: pd.DataFrame) -> dict[str, Any]:
+    """Compute baseline statistics from TRAIN set only.
+
+    Returns a dict with keys: amount_mean, amount_std, known_devices, known_geos.
+    """
     normal_train = train_df[train_df.is_fraud_spike == 0]
+    if len(normal_train) == 0:
+        log.warning("No normal transactions in training data — using full dataset for stats")
+        normal_train = train_df
+
+    amount_std = normal_train.amount.std()
+    if amount_std == 0 or np.isnan(amount_std):
+        amount_std = 1.0
+        log.warning("Amount standard deviation is 0 or NaN — defaulting to 1.0")
+
     return {
-        "amount_mean": normal_train.amount.mean(),
-        "amount_std": normal_train.amount.std(),
+        "amount_mean": float(normal_train.amount.mean()),
+        "amount_std": float(amount_std),
         "known_devices": set(normal_train.device_id.unique()),
         "known_geos": set(normal_train.geo.unique()),
     }
 
 
-def build_window_features(df: pd.DataFrame, hist_stats: dict) -> pd.DataFrame:
+def build_window_features(df: pd.DataFrame, hist_stats: dict[str, Any]) -> pd.DataFrame:
+    """Build rolling-window features from a transaction DataFrame.
+
+    Args:
+        df: Transaction DataFrame with columns: timestamp, amount, device_id, geo,
+            is_fraud_spike, and optionally spike_type.
+        hist_stats: Historical statistics from _historical_stats().
+
+    Returns:
+        A DataFrame with one row per non-empty time window, containing all 16
+        engineered features plus window_start and window_label.
+    """
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    if len(df) == 0:
+        log.warning("Empty transaction DataFrame — returning empty features")
+        return pd.DataFrame()
+
     df = df.set_index("timestamp").sort_index()
 
     df["is_known_device"] = df["device_id"].isin(hist_stats["known_devices"]).astype(float)
@@ -64,11 +99,21 @@ def build_window_features(df: pd.DataFrame, hist_stats: dict) -> pd.DataFrame:
         "amount_skewness": grouped["amount"].skew(),
     })
 
+    # Preserve dominant spike_type per window if available
+    if "spike_type" in df.columns:
+        feats["spike_type"] = grouped["spike_type"].agg(
+            lambda x: x.value_counts().index[0] if len(x) > 0 else "none"
+        )
+
     # Drop empty windows
     feats = feats[feats["txn_count"] > 0].copy()
 
-    # Derived features
-    feats["device_reuse_rate"] = feats["txn_count"] / feats["unique_devices"]
+    if len(feats) == 0:
+        log.warning("All windows are empty after filtering — returning empty features")
+        return pd.DataFrame()
+
+    # Derived features with safe division
+    feats["device_reuse_rate"] = feats["txn_count"] / feats["unique_devices"].clip(lower=1)
     feats["amount_cv"] = feats["amount_std"] / (feats["amount_mean"].abs() + 1e-10)
 
     # Temporal features
@@ -82,10 +127,13 @@ def build_window_features(df: pd.DataFrame, hist_stats: dict) -> pd.DataFrame:
     feats["amount_skewness"] = feats["amount_skewness"].fillna(0)
     feats = feats.fillna(0)
 
+    log.info("Built %d window features (%d positive)", len(feats), int(feats["window_label"].sum()))
     return feats
 
 
-def main():
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
     train_raw = pd.read_csv("data/transactions_train.csv")
     test_raw = pd.read_csv("data/transactions_test.csv")
 
